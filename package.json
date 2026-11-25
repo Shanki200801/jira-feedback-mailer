@@ -1,0 +1,20 @@
+{
+  "name": "jira-feedback-mailer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Apps Script that emails a feedback form link when a Jira Cloud ticket enters a status.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test",
+    "login": "clasp login",
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open-script"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

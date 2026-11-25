@@ -1,0 +1,6 @@
+node_modules/
+# Per-deployment and credential files: never commit
+.clasp.json
+.clasprc.json
+*.token
+.env
