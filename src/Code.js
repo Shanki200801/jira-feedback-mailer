@@ -12,8 +12,8 @@
 const CONFIG_SHEET = 'Config';
 const SENT_SHEET = 'Sent';
 const SENT_HEADERS = ['Issue key', 'Recipients', 'Recipient name', 'Summary', 'Status',
-                      'Attempts', 'Last error', 'First seen', 'Updated'];
-const COL = { key: 1, email: 2, name: 3, summary: 4, status: 5, attempts: 6, error: 7, first: 8, updated: 9 };
+                      'Attempts', 'Last error', 'First seen', 'Updated', 'Extra fields'];
+const COL = { key: 1, email: 2, name: 3, summary: 4, status: 5, attempts: 6, error: 7, first: 8, updated: 9, extra: 10 };
 
 // Rows in these states are never emailed again (use "Allow re-send for selected row" to override).
 // DRY_RUN is final so switching DRY_RUN off does not email a backlog of old tickets.
@@ -28,6 +28,9 @@ const DEFAULT_CONFIG = [
   ['EXTRA_JQL', '', 'Optional extra JQL filter, e.g.  issuetype = Task AND labels != no-feedback'],
   ['RECIPIENT_FIELD', 'reporter',
    'Who gets the email: reporter, assignee, creator, or a custom field id (customfield_12345) holding user(s) or email text'],
+  ['EXTRA_FIELDS', '',
+   'Optional extra Jira fields as placeholders: name=Jira field name or id, comma-separated. ' +
+   'E.g.  department=Department, purchase_category=Category of Purchase  gives {department} {purchase_category}'],
   // Email
   ['FROM_ADDRESS', '', 'Blank = the Google account that ran Setup. Otherwise must be a Gmail "Send mail as" alias of it'],
   ['FROM_NAME', 'Feedback', 'Sender display name'],
@@ -35,7 +38,7 @@ const DEFAULT_CONFIG = [
   ['CC', '', 'Optional comma-separated CC addresses'],
   ['BCC', '', 'Optional comma-separated BCC addresses (e.g. a shared inbox for audit)'],
   ['FORM_URL', 'https://docs.google.com/forms/d/e/FORM_ID/viewform?usp=pp_url&entry.111111={key}',
-   'Pre-filled form link. Placeholders: {key} {email} {summary} {status}'],
+   'Pre-filled form link. Placeholders: {key} {email} {summary} {status} {recipient_name} {issue_url} + EXTRA_FIELDS'],
   ['EMAIL_SUBJECT', 'We would love your feedback on {key}',
    'Placeholders: {key} {summary} {status} {recipient_name}'],
   ['EMAIL_BODY_HTML',
@@ -139,7 +142,8 @@ function checkJiraAccess() {
     let jql = `${projectClause_(cfg)} AND status in (${statuses})`;
     if (String(cfg.EXTRA_JQL || '').trim()) jql += ` AND (${cfg.EXTRA_JQL.trim()})`;
     jql += ' ORDER BY updated DESC';
-    const issues = searchJira_(cfg, jql, 5);
+    const extras = extraFields_(cfg);
+    const issues = searchJira_(cfg, jql, 5, extras);
 
     let msg = `Logged in to Jira as ${me.displayName || '?'} (${me.emailAddress || 'email hidden'}).\n\n`;
     if (!issues.length) {
@@ -151,7 +155,9 @@ function checkJiraAccess() {
     msg += `Recipients from "${field}":\n` + issues.map(i => {
       const r = recipientsFrom_(i, field);
       if (!r.emails.length) hidden++;
-      return `${i.key}: ${r.emails.join(', ') || '⚠ no visible email'}`;
+      const x = extraValues_(i, extras);
+      const xs = Object.keys(x).map(k => `  {${k}} = ${x[k] || '(empty)'}`).join('\n');
+      return `${i.key}: ${r.emails.join(', ') || '⚠ no visible email'}` + (xs ? '\n' + xs : '');
     }).join('\n');
     if (hidden) msg += `\n\n⚠ ${hidden} ticket(s) have no visible email (empty field, or hidden by Atlassian ` +
                        'privacy settings). They will be logged as NO_EMAIL.';
@@ -194,13 +200,15 @@ function poll() {
       : Number(cfg.INITIAL_LOOKBACK_MINUTES || 60);
 
     const jql = buildPollJql_(cfg, lookback);
-    const issues = searchJira_(cfg, jql, 500);
+    const extras = extraFields_(cfg);
+    const issues = searchJira_(cfg, jql, 500, extras);
 
     const log = new SentLog_();
     issues.forEach(issue => {
       const r = recipientsFrom_(issue, field);
+      const x = extras.length ? JSON.stringify(extraValues_(issue, extras)) : '';
       log.upsertSeen(issue.key, r.emails.join(', '), r.name, issue.fields.summary || '',
-                     ((issue.fields.status || {}).name) || '');
+                     ((issue.fields.status || {}).name) || '', x);
     });
 
     const maxAttempts = Number(cfg.MAX_ATTEMPTS || 3);
@@ -244,7 +252,7 @@ function processRow_(cfg, log, row) {
 }
 
 function sendFeedbackEmail_(cfg, row) {
-  const vars = {
+  const vars = Object.assign(parseExtra_(row.extra), {
     key: row.key,
     summary: row.summary,
     status: row.status || list_(cfg.TRIGGER_STATUS)[0] || '',
@@ -252,7 +260,7 @@ function sendFeedbackEmail_(cfg, row) {
     reporter_name: row.name || 'there', // alias kept for older templates
     email: row.emails.join(','),
     issue_url: jiraBase_(cfg) + '/browse/' + row.key,
-  };
+  }); // built-in placeholders win over EXTRA_FIELDS names
   vars.form_link = fill_(cfg.FORM_URL, vars, encodeURIComponent);
 
   const subject = fill_(cfg.EMAIL_SUBJECT, vars, s => s);
@@ -271,8 +279,8 @@ function sendFeedbackEmail_(cfg, row) {
 
 // ---------------------------------------------------------------- Jira
 
-function searchJira_(cfg, jql, limit) {
-  const fields = ['summary', 'status', recipientField_(cfg)].join(',');
+function searchJira_(cfg, jql, limit, extras) {
+  const fields = ['summary', 'status', recipientField_(cfg)].concat((extras || []).map(x => x.id)).join(',');
   const out = [];
   let pageToken = null;
   do {
@@ -368,6 +376,55 @@ function recipientsFrom_(issue, field) {
   return { emails: emails_(found.join(',')), name: name };
 }
 
+/**
+ * Parses EXTRA_FIELDS ("department=Department, cat=customfield_10051") into [{name, id}],
+ * resolving Jira field names to ids. Returns [] when unset.
+ */
+function extraFields_(cfg) {
+  const specs = list_(cfg.EXTRA_FIELDS).map(item => {
+    const m = item.match(/^(\w+)\s*=\s*(.+)$/);
+    if (!m) throw new Error(`EXTRA_FIELDS item "${item}" must look like  placeholder=Jira field name`);
+    return { name: m[1], field: m[2].trim() };
+  });
+  if (!specs.length) return [];
+  let all = null;
+  return specs.map(s => {
+    if (/^customfield_\d+$/i.test(s.field)) return { name: s.name, id: s.field.toLowerCase() };
+    all = all || jiraGet_(cfg, '/rest/api/3/field');
+    const hits = all.filter(f => f.id === s.field || String(f.name).toLowerCase() === s.field.toLowerCase());
+    const ids = hits.map(f => f.id).filter((id, i, a) => a.indexOf(id) === i);
+    if (!ids.length) throw new Error(`EXTRA_FIELDS: no Jira field named "${s.field}".`);
+    if (ids.length > 1) {
+      throw new Error(`EXTRA_FIELDS: several Jira fields are named "${s.field}" (${ids.join(', ')}). Use the id instead.`);
+    }
+    return { name: s.name, id: ids[0] };
+  });
+}
+
+/** {placeholder: text} for an issue's extra fields. */
+function extraValues_(issue, extras) {
+  const out = {};
+  extras.forEach(x => { out[x.name] = fieldText_((issue.fields || {})[x.id]); });
+  return out;
+}
+
+/** Readable text from any Jira field value: text, number, select, multi-select, cascading, user, rich text. */
+function fieldText_(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v !== 'object') return String(v);
+  if (Array.isArray(v)) return v.map(fieldText_).filter(Boolean).join(', ');
+  if (v.type === 'doc' || v.type === 'paragraph' || Array.isArray(v.content)) {
+    return (v.text || '') + (v.content || []).map(fieldText_).join(v.type === 'doc' ? '\n' : '').trim();
+  }
+  if (v.type === 'text') return v.text || '';
+  const own = v.value !== undefined ? String(v.value) : (v.displayName || v.name || v.key || '');
+  return v.child ? `${own} - ${fieldText_(v.child)}` : own;
+}
+
+function parseExtra_(s) {
+  try { return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
+}
+
 function jqlString_(s) {
   return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
@@ -384,7 +441,7 @@ function SentLog_() {
   this.rows.forEach((r, i) => { if (r[0]) this.byKey[r[0]] = i; });
 }
 
-SentLog_.prototype.upsertSeen = function (key, emails, name, summary, jiraStatus) {
+SentLog_.prototype.upsertSeen = function (key, emails, name, summary, jiraStatus, extra) {
   this.statusByKey[key] = jiraStatus;
   const now = new Date();
   if (key in this.byKey) {
@@ -394,9 +451,13 @@ SentLog_.prototype.upsertSeen = function (key, emails, name, summary, jiraStatus
       r[COL.email - 1] = emails; // recipient became visible / was filled in
       this.sheet.getRange(i + 2, COL.email).setValue(emails);
     }
+    if (FINAL_STATES.indexOf(r[COL.status - 1]) === -1 && extra && !r[COL.extra - 1]) {
+      r[COL.extra - 1] = extra;
+      this.sheet.getRange(i + 2, COL.extra).setValue(extra);
+    }
     return;
   }
-  const row = [key, emails, name, summary, 'NEW', 0, '', now, now];
+  const row = [key, emails, name, summary, 'NEW', 0, '', now, now, extra || ''];
   this.sheet.appendRow(row);
   this.byKey[key] = this.rows.length;
   this.rows.push(row);
@@ -411,7 +472,8 @@ SentLog_.prototype.pending = function (maxAttempts) {
     if (!r[0] || FINAL_STATES.indexOf(status) !== -1) return;
     if (status === 'FAILED' && attempts >= maxAttempts) return;
     out.push({ index: i, key: r[0], emails: emails_(r[COL.email - 1]), name: r[COL.name - 1],
-               summary: r[COL.summary - 1], status: this.statusByKey[r[0]] || '', attempts: attempts });
+               summary: r[COL.summary - 1], status: this.statusByKey[r[0]] || '', attempts: attempts,
+               extra: r[COL.extra - 1] });
   });
   return out;
 };

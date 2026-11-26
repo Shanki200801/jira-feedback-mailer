@@ -59,3 +59,29 @@ test('fill_ encodes per context; htmlToText_ makes a readable plain-text body', 
   assert.equal(html, '<p>Fish &amp; &lt;chips&gt;</p><p><a href="https://f?a=1&amp;b=2">Go</a></p>');
   assert.equal(g('htmlToText_')(html), 'Fish & <chips>\nGo: https://f?a=1&b=2');
 });
+
+test('fieldText_ reads select, multi-select, cascading, user, number and rich-text values', () => {
+  const f = g('fieldText_');
+  assert.equal(f({ value: 'Finance', id: '1' }), 'Finance');
+  assert.equal(f([{ value: 'Hardware' }, { value: 'Software' }]), 'Hardware, Software');
+  assert.equal(f({ value: 'IT', child: { value: 'Laptops' } }), 'IT - Laptops');
+  assert.equal(f({ displayName: 'Ann', accountId: 'x' }), 'Ann');
+  assert.equal(f(42), '42');
+  assert.equal(f(null), '');
+  assert.equal(f({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Office ' }, { type: 'text', text: 'chairs' }] }] }),
+               'Office chairs');
+});
+
+test('extraFields_ parses ids without calling Jira and rejects bad items', () => {
+  const f = g('extraFields_');
+  assert.deepEqual(JSON.parse(JSON.stringify(f(cfg({ EXTRA_FIELDS: 'department=customfield_10050, cat = CustomField_10051' })))),
+                   [{ name: 'department', id: 'customfield_10050' }, { name: 'cat', id: 'customfield_10051' }]);
+  assert.equal(f(cfg({ EXTRA_FIELDS: '' })).length, 0);
+  assert.throws(() => f(cfg({ EXTRA_FIELDS: 'Category of Purchase' })), /must look like/);
+});
+
+test('extraValues_ maps placeholders to field text', () => {
+  const extras = [{ name: 'department', id: 'customfield_1' }, { name: 'purchase_category', id: 'customfield_2' }];
+  const issue = { fields: { customfield_1: { value: 'Finance' }, customfield_2: null } };
+  assert.deepEqual(JSON.parse(JSON.stringify(g('extraValues_')(issue, extras))), { department: 'Finance', purchase_category: '' });
+});

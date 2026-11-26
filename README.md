@@ -54,6 +54,7 @@ The script ID is in the Apps Script editor under **Project Settings → IDs**. C
 | `TRIGGER_STATUS` | `Done` or `Awaiting payment, Closed` | Exact status names. Comma-separated for several |
 | `EXTRA_JQL` | `issuetype = Task AND labels != no-feedback` | Optional extra filter |
 | `RECIPIENT_FIELD` | `reporter` | `reporter`, `assignee`, `creator`, or `customfield_12345`. A custom field can hold a user, several users, or email text |
+| `EXTRA_FIELDS` | `department=Department, purchase_category=Category of Purchase` | Optional. Extra Jira fields to use as placeholders: `placeholder=Jira field name` (or a `customfield_12345` id). See [Form link](#form-link) |
 | `FROM_ADDRESS` | *(blank)* | Blank = the account that ran Setup. Anything else must be a Gmail **Send mail as** alias of that account |
 | `FROM_NAME` | `Support Team` | Sender display name |
 | `REPLY_TO`, `CC`, `BCC` | `team@acme.com` | Optional. `BCC` to a shared inbox gives you an audit trail |
@@ -66,12 +67,19 @@ The script ID is in the Apps Script editor under **Project Settings → IDs**. C
 | `OVERLAP_MINUTES` | `10` | Extra look-back on each run, so a slow run never misses a change |
 | `MAX_ATTEMPTS` | `3` | How many times a failed send is retried |
 
-**Placeholders:** `{key}` `{summary}` `{status}` `{recipient_name}` `{email}` `{issue_url}` `{form_link}`. They are URL-encoded inside `FORM_URL` and HTML-escaped inside the body.
+**Placeholders:** `{key}` `{summary}` `{status}` `{recipient_name}` `{email}` `{issue_url}` `{form_link}`, plus one per `EXTRA_FIELDS` item. They are URL-encoded inside `FORM_URL` and HTML-escaped inside the body.
 
 If you set up an older version, run **Setup** again. It adds any new settings to `Config` and keeps your existing values.
 
 ### Form link
 In Google Forms: **⋮ → Get pre-filled link**. Type `TEST` into a short-answer "Ticket" question, click **Get link → Copy link**, then replace `TEST` with `{key}`. Responses will then show which ticket they're about.
+
+To pre-fill more questions from Jira (e.g. *Department*, *Category of Purchase*):
+1. Add them to `EXTRA_FIELDS`: `department=Department, purchase_category=Category of Purchase`. Use the field name exactly as Jira shows it, or its `customfield_…` id if two fields share a name.
+2. Get a new pre-filled link with a dummy answer in each of those questions, and swap the dummies for `{department}` and `{purchase_category}`.
+3. Run **Check Jira access**. It shows each placeholder's value for a few tickets.
+
+For dropdown/checkbox questions, the Jira value must match a form option exactly or the form leaves it blank. The values are captured in the `Extra fields` column of `Sent` when a ticket is first seen.
 
 ## Day-to-day
 
